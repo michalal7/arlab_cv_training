@@ -1,12 +1,32 @@
-# Beispiel-Struktur des `runs/` Ordners nach Training beider Modelle
+# Beispiel-Struktur von `runs/segment/` nach Training
 
-## Annahme:
-- **yolo11n-seg** Training gestartet am: `20260125-143000`
-- **yolo26n-seg** Training gestartet am: `20260125-150000`
-- Beide Skripte trainieren 4 Experimente: `no_augmentation`, `baseline`, `moderate_geom`, `strong_geom`
+## Annahme (aktuell im Workspace)
+- Outputs wurden von `scripts/local/train_models.py` erzeugt.
+- Unter `runs/segment/` gibt es pro `{model_name}` einen Timestamp-Ordner.
+- In jedem Timestamp-Ordner liegen je Experiment (`no_augmentation`, `baseline`, `moderate_geom`, `strong_geom`, optional `strong_geom_fruit`) ein Ordner plus `VAL_*`-Ordner für qualitative Validierungs-Visuals.
 
-## Struktur (Ultralytics-Standard mit Modell-Unterscheidung):
+## Struktur (aktuell im Workspace):
 
+```
+runs/
+└── segment/
+    └── {model_name}/
+        └── {timestamp}/
+            ├── {experiment}/
+            │   ├── weights/
+            │   │   ├── best.pt
+            │   │   └── last.pt
+            │   ├── results.csv
+            │   ├── results.png
+            │   ├── confusion_matrix*.png
+            │   ├── *F1_curve*.png / *PR_curve*.png / ...
+            │   └── train_batch*.jpg
+            └── VAL_{experiment}/
+                ├── confusion_matrix*.png
+                ├── val_batch*_labels.jpg
+                └── val_batch*_pred.jpg
+```
+<!--
 ```
 runs/
 ├── yolo11n-seg/                                      # Projekt-Ordner (project="yolo11n-seg")
@@ -78,35 +98,20 @@ runs/
                 └── VAL_strong_geom/
 
 ```
+-->
 
-## Zusammenfassung:
+## Kurze Zusammenfassung (für neue Nutzer)
 
-### Ordnerstruktur:
-- **`runs/yolo11n-seg/`**: Alle Ergebnisse von **yolo11n-seg** Training
-- **`runs/yolo26n-seg/`**: Alle Ergebnisse von **yolo26n-seg** Training
+- `{timestamp}/` gruppiert alle Experimente eines Trainingsruns.
+- `{experiment}/` enthält Training-Ausgaben inkl. `weights/` und `results.csv` (dort liegen die numerischen Metriken).
+- `VAL_{experiment}/` enthält v.a. Visuals (z.B. `val_batch*_labels.jpg` und `val_batch*_pred.jpg`). In deinem Workspace liegt dort typischerweise keine `results.csv`.
 
-### Hierarchie:
-1. **Modell-Ordner**: `yolo11n-seg/` oder `yolo26n-seg/`
-2. **Timestamp-Ordner**: `20260125_143000/` (alle Experimente eines Runs teilen denselben Timestamp)
-3. **Experiment-Ordner**: `no_augmentation/`, `baseline/`, `moderate_geom/`, `strong_geom/`
-4. **Validation-Ordner**: `VAL_no_augmentation/`, `VAL_baseline/`, etc. (im gleichen Timestamp-Ordner)
+## Wo finde ich die Metriken für den Vergleich?
 
-### Beispiel-Pfad (Ultralytics-Standard):
-- Training: `runs/yolo11n-seg/segment/train/20260125_143000/no_augmentation/`
-- Validation: `runs/yolo11n-seg/segment/val/20260125_143000/VAL_no_augmentation/`
+`compare_models.py` / `compare_models_demo_day.py` liest aus:
+- `runs/segment/{model_name}/{timestamp}/{experiment}/results.csv`
 
-### Wichtige Dateien für Analyse:
-1. **results.png** in jedem Experiment-Ordner → Metriken-Verlauf während Training
-2. **results.csv** in jedem `VAL_*` Ordner → Finale Metriken (wird für Summary-CSV verwendet)
-3. **confusion_matrix.png** → Confusion Matrix
-4. **train_batch*.jpg** → Trainingsbilder mit Annotationen
-5. **labels.jpg** → Label-Verteilung im Dataset
+## Beispielpfade
 
-### Vorteile der Ultralytics-Standardstruktur:
-- ✅ **Standardkonform**: Verwendet die native Ultralytics-Ordnerstruktur ohne Manipulation
-- ✅ **Keine manuellen Verschiebungen**: Alles wird automatisch von Ultralytics erstellt
-- ✅ **Eindeutige Modell-Identifikation**: Der oberste Ordner (`yolo11n-seg/` oder `yolo26n-seg/`) zeigt sofort, welches Modell verwendet wurde
-- ✅ **Klare Trennung**: Training (`train/`) und Validation (`val/`) sind getrennt
-- ✅ **Zeitliche Organisation**: Alle Experimente eines Runs teilen denselben Timestamp-Ordner
-- ✅ **Kompatibel**: Funktioniert mit allen Ultralytics-Tools und -Features
-- ✅ **Einfache Navigation**: Modell-Unterscheidung auf oberster Ebene, keine verschachtelten Projekt-Ordner
+- best weights: `runs/segment/{model_name}/{timestamp}/{experiment}/weights/best.pt`
+- Val-Visuals: `runs/segment/{model_name}/{timestamp}/VAL_{experiment}/val_batch*_pred.jpg`

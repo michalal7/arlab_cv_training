@@ -19,6 +19,10 @@ slurm-*.err
 *.cache
 **/*.cache
 
+# Python bytecode
+**/__pycache__/
+**/*.pyc
+
 # macOS metadata
 __MACOSX/
 **/.DS_Store
