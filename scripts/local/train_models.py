@@ -4,6 +4,10 @@ Train and evaluate YOLO segmentation models for augmentation experiments.
 This script runs multiple experiments (baseline / moderate_geom / strong_geom and fruit variant),
 performs a validation step with fixed conf/iou, exports `best.pt` into `yolo_weights/`,
 and writes a summary CSV (one row per experiment) for easy comparison.
+
+Maintainer:
+    Meruna Yugarajah <m.yugarajah@gmail.com>
+    Aleksander Michalak <aleksander1.michalak@uni-a.de>
 """
 
 import shutil
@@ -23,8 +27,7 @@ from ultralytics import YOLO
 # ============================================================
 # 1) PATHS / SETTINGS
 # ============================================================
-
-# Project root: repository root (this file lives in scripts/local/)
+# Repository root. This script is expected to live in ``scripts/local/``.
 project_root = Path(__file__).resolve().parents[2]
 
 # DATA_YAML is set dynamically based on the --dataset argument
@@ -33,15 +36,26 @@ project_root = Path(__file__).resolve().parents[2]
 EPOCHS = 5000
 IMGSZ = 640
 BATCH = 16          # RTX 3080: safe. If OOM: use 4
-DEVICE = 0          # GPU (CPU would be -1)
+DEVICE = 0          # GPU device index. Use -1 for CPU.
 PATIENCE = 100
 
 # ============================================================
 # 2) VAL SETTINGS (fixed for all runs)
 # ============================================================
-# For a fair Precision/Recall/F1 comparison, conf/iou must be fixed.
-# data is set dynamically.
 def get_val_args(data_yaml: Path) -> dict:
+    """Build validation arguments shared by all experiments.
+
+    The returned settings intentionally keep confidence threshold, IoU
+    threshold, image size, batch size, and dataset split identical for all
+    experiments so that validation metrics remain directly comparable.
+
+    Args:
+        data_yaml: Path to the dataset configuration file.
+
+    Returns:
+        A dictionary containing the validation arguments passed to
+        ``model.val()``.
+    """
     return dict(
         data=str(data_yaml),
         imgsz=IMGSZ,
@@ -53,9 +67,10 @@ def get_val_args(data_yaml: Path) -> dict:
     )
 
 # ============================================================
-# 3) 3 EXPERIMENTS (mosaic disabled)
+# 3) EXPERIMENTS (mosaic disabled)
 # ============================================================
-# Idea: vary geometry only; keep realistic color/lighting augmentation.
+# The experiments mainly vary geometric augmentation while keeping color and
+# lighting augmentations in a realistic range.
 EXPERIMENTS = [
     {
         "name": "no_augmentation",
@@ -64,13 +79,10 @@ EXPERIMENTS = [
     {
         "name": "baseline",
         "params": dict(
-            # Color / lighting variation
             hsv_h=0.03, hsv_s=0.6, hsv_v=0.5,
-            # Mild geometry
             fliplr=0.5,
             translate=0.1,
             scale=0.1,
-            # mosaic intentionally NOT set
         ),
     },
     {
@@ -102,12 +114,11 @@ EXPERIMENTS = [
         "params": dict(
             hsv_h=0.02, hsv_s=0.4, hsv_v=0.4,
             fliplr=0.5,
-            flipud=0.1,      # Reduziert von 0.2
+            flipud=0.1,      
             translate=0.2,
-            scale=0.25,      # Leicht reduziert von 0.3
+            scale=0.25,      
             degrees=15.0,
-            # shear=5.0 removed - not suitable for fruit
-            perspective=0.0003,  # Leicht reduziert
+            perspective=0.0003,
         ),
     },
 ]
@@ -117,7 +128,15 @@ EXPERIMENTS = [
 # 4) HELPER FUNCTIONS
 # ============================================================
 def format_time(seconds: float) -> str:
-    """Format seconds into h/m/s."""
+    """Format a duration in seconds as a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        A formatted duration string using seconds, minutes and seconds, or
+        hours, minutes, and seconds depending on the input length.
+    """
     seconds = int(seconds)
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -130,7 +149,17 @@ def format_time(seconds: float) -> str:
 
 
 def safe_float(x: Any) -> Optional[float]:
-    """Robust float-Parsing."""
+    """Convert a value to ``float`` if possible.
+
+    This helper is used when reading metric values from CSV files or result
+    objects that may contain missing or non-numeric entries.
+
+    Args:
+        x: Value to convert.
+
+    Returns:
+        The converted float value, or ``None`` if conversion fails.
+    """
     try:
         return float(x)
     except Exception:
@@ -138,7 +167,16 @@ def safe_float(x: Any) -> Optional[float]:
 
 
 def compute_f1(p: Optional[float], r: Optional[float]) -> Optional[float]:
-    """Compute F1 from precision and recall."""
+    """Compute the F1 score from precision and recall.
+
+    Args:
+        p: Precision value.
+        r: Recall value.
+
+    Returns:
+        The harmonic mean of precision and recall, ``0.0`` if ``p + r == 0``,
+        or ``None`` if either input is missing.
+    """
     if p is None or r is None:
         return None
     if p + r == 0:
@@ -147,11 +185,18 @@ def compute_f1(p: Optional[float], r: Optional[float]) -> Optional[float]:
 
 
 def find_col(keys: List[str], candidates: List[str]) -> Optional[str]:
-    """
-    Find a column in `results.csv`.
+    """Find a matching CSV column name by case-insensitive substring search.
 
-    Ultralytics column names can vary slightly between versions, so we match by substring
-    (case-insensitive).
+    Ultralytics metric column names may vary slightly between versions. This
+    helper searches the available header keys and returns the first matching
+    column for one of the provided candidate names.
+
+    Args:
+        keys: Available column names from the CSV header.
+        candidates: Candidate metric names or substrings to search for.
+
+    Returns:
+        The first matching column name, or ``None`` if no column matches.
     """
     for cand in candidates:
         cl = cand.lower()
@@ -162,12 +207,28 @@ def find_col(keys: List[str], candidates: List[str]) -> Optional[str]:
 
 
 def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
-    """
-    Read `results.csv` from a `val()` run and extract mask metrics:
-    - precision(M), recall(M)
-    - segm mAP50, segm mAP50-95
+    """Read validation metrics from an Ultralytics ``results.csv`` file.
 
-    Then compute F1.
+    The function extracts segmentation validation metrics from a results file.
+    Since Ultralytics column names can change slightly between versions,
+    relevant columns are resolved through flexible substring matching.
+
+    Extracted metrics include:
+        - precision
+        - recall
+        - F1 score
+        - mAP50
+        - mAP50-95
+
+    The function also records which columns were used to retrieve the values.
+
+    Args:
+        results_csv: Path to the ``results.csv`` file.
+
+    Returns:
+        A dictionary containing the extracted metrics and the matched column
+        names. Returns an empty dictionary if the file does not exist, has no
+        rows, or has no readable header.
     """
     if not results_csv.exists():
         return {}
@@ -188,6 +249,7 @@ def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
     col_m5095 = find_col(keys, ["metrics/segm_map50-95", "metrics/segm_mAP50-95", "metrics/map50-95"])
 
     def best(col: Optional[str]) -> Optional[float]:
+        """Return the maximum valid numeric value from a CSV column."""
         if col is None:
             return None
         vals = []
@@ -211,9 +273,38 @@ def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
 
 
 # ============================================================
-# 5) One run: train -> save best.pt -> validate -> read metrics
+# 5) SINGLE EXPERIMENT EXECUTION
 # ============================================================
 def run_experiment(idx: int, exp: Dict, weights_path: Path, model_name: str, dataset_name: str, run_timestamp: str, data_yaml: Path, total_experiments: int) -> Dict:
+    """Train, validate, and export one experiment run.
+
+    This function performs one complete experiment cycle:
+        1. Load the base model weights.
+        2. Train the model with the augmentation parameters of the experiment.
+        3. Export the resulting ``best.pt`` checkpoint.
+        4. Run validation with fixed settings.
+        5. Extract validation metrics from the result object or CSV output.
+
+    Args:
+        idx: Zero-based index of the current experiment.
+        exp: Experiment definition containing ``name`` and augmentation
+            ``params``.
+        weights_path: Path to the base YOLO weights file.
+        model_name: Full model identifier including dataset name.
+        dataset_name: Name of the selected dataset.
+        run_timestamp: Shared timestamp for all runs of the current script
+            execution.
+        data_yaml: Path to the dataset configuration file.
+        total_experiments: Total number of experiments executed in this run.
+
+    Returns:
+        A dictionary containing run metadata, output directories, exported
+        checkpoint paths, extracted metrics, and run duration.
+
+    Raises:
+        FileNotFoundError: If the input weights file or generated ``best.pt``
+            checkpoint cannot be found.
+    """
     name = exp["name"]
     params = exp["params"]
 
@@ -223,14 +314,12 @@ def run_experiment(idx: int, exp: Dict, weights_path: Path, model_name: str, dat
 
     t0 = time.time()
 
-    # Load the model fresh (no continuing from the previous run)
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights not found: {weights_path}")
     
     print(f"📦 Loading model from: {weights_path}")
     model = YOLO(str(weights_path))
 
-    # Timestamp with underscores for folder structure
     timestamp_underscore = run_timestamp.replace("-", "_")
     
     # Ultralytics uses `project` and `name` to build the output folder.
@@ -242,7 +331,6 @@ def run_experiment(idx: int, exp: Dict, weights_path: Path, model_name: str, dat
     project_name = model_name  # -> runs/segment/{model_name}/
     unique_name = f"{timestamp_underscore}/{name}"
 
-    # Train args: base settings + augmentation parameters
     train_args = dict(
         data=str(data_yaml),
         epochs=EPOCHS,
@@ -250,46 +338,43 @@ def run_experiment(idx: int, exp: Dict, weights_path: Path, model_name: str, dat
         imgsz=IMGSZ,
         batch=BATCH,
         device=DEVICE,
-        project=project_name,  # -> runs/segment/{model_name}/
-        name=unique_name,      # -> .../{timestamp_underscore}/{experiment}/
-        amp=True,  # AMP enabled (yolo26n.pt is available)
-        plots=True,  # enable YOLO plots (train_batch*.jpg, labels.jpg, confusion matrix, etc.)
+        project=project_name,  
+        name=unique_name,      
+        amp=True,  
+        plots=True,  
     )
     train_args.update(params)
 
-    # 1) TRAIN
+    # Step 1: Train the model.
     results = model.train(**train_args)
     train_dir = Path(results.save_dir)
 
-    # 2) best.pt finden
+    # Step 2: Locate the best checkpoint generated by training.
     best_pt = train_dir / "weights" / "best.pt"
     if not best_pt.exists():
         raise FileNotFoundError(f"best.pt not found: {best_pt}")
 
-    # 3) best.pt versioniert kopieren
+    # Step 3: Export a timestamped copy of the best checkpoint.
     out_dir = project_root / "yolo_weights"
     out_dir.mkdir(exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # `model_name` already includes the dataset name (e.g. "yolo11n-seg_data_640"), so do not add it again
     exported = out_dir / f"{model_name}-demo-dataset-{name}-{ts}.pt"
     shutil.copy2(best_pt, exported)
     print(f"✅ Exported best.pt to: {exported}")
 
-    # 4) Validation (fair: same conf/iou/imgsz/batch for all runs)
+    # Step 4: Run validation with fixed settings for a fair comparison.
     print("🔍 Validation (fixed conf/iou) ...")
     val_model = YOLO(str(best_pt))
-    # Validation name: same structure as training, but with a `VAL_` prefix
-    # Ultralytics creates: runs/{project}/{task}/val/{name}/
     val_name = f"{timestamp_underscore}/VAL_{name}"
     val_args = {**get_val_args(data_yaml), "project": project_name, "name": val_name}
     val_results = val_model.val(**val_args)
     val_dir = Path(val_results.save_dir)
 
-    # 5) Extract metrics (first from the `val_results` object, then fallback to CSV)
+    # Step 5: Extract metrics from the validation result object first and fall
+    # back to ``results.csv`` if necessary.
     metrics = {}
     
-    # Try extracting metrics directly from `val_results`
     if hasattr(val_results, "seg"):
         seg = val_results.seg
         p = safe_float(getattr(seg, "p", None))
@@ -304,7 +389,6 @@ def run_experiment(idx: int, exp: Dict, weights_path: Path, model_name: str, dat
             metrics["mAP50"] = mAP50
             metrics["mAP50-95"] = mAP50_95
     
-    # Fallback: try reading from results.csv (if present)
     if not metrics.get("precision"):
         csv_metrics = read_val_metrics(val_dir / "results.csv")
         if csv_metrics.get("precision") is not None:
@@ -372,13 +456,10 @@ def main():
         if not experiments_to_run:
             raise ValueError(f"Augmentation '{args.augmentation}' not found!")
     
-    # Set dataset path
     dataset_name = args.dataset
     DATA_YAML = project_root / dataset_name / "data.yaml"
     
-    # Set weights path based on model selection
     base_model_name = args.model
-    # Model name with dataset: yolo11n-seg_data_640
     model_name = f"{base_model_name}_{dataset_name}"
     WEIGHTS_PATH = (project_root / "yolo_weights" / f"{base_model_name}.pt").resolve()
     
@@ -435,7 +516,6 @@ def main():
     overall0 = time.time()
     all_results = []
 
-    # Training runs (filtered by --augmentation)
     for i, exp in enumerate(experiments_to_run):
         all_results.append(run_experiment(i, exp, WEIGHTS_PATH, model_name, dataset_name, run_timestamp, DATA_YAML, len(experiments_to_run)))
 
@@ -446,9 +526,7 @@ def main():
         print(f"⏱ Total so far: {format_time(elapsed)} | ⏳ Remaining (~): {format_time(remaining)}")
         print("-" * 90)
 
-    # -----------------------
-    # Summary CSV (1 row per run) -> for Excel/presentation
-    # -----------------------
+    # Write one summary row per experiment for spreadsheet-based comparison.
     out_dir = project_root / "yolo_weights"
     out_dir.mkdir(exist_ok=True)
 
@@ -471,9 +549,7 @@ def main():
 
     print(f"\n📄 Summary CSV saved: {summary_csv}")
 
-    # -----------------------
-    # Select the best model by validation F1
-    # -----------------------
+    # Select the best run based on validation F1 score.
     best_name = None
     best_f1 = float("-inf")
     best_pt = None

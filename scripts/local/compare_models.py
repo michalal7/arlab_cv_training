@@ -1,8 +1,15 @@
-"""
-Compare trained YOLO segmentation models across augmentation experiments.
+"""Compare trained YOLO segmentation models across augmentation experiments.
 
-The script loads `best.pt` checkpoints, runs evaluation on the validation set with fixed
-parameters, and writes a comparison table with all important metrics.
+This script loads ``best.pt`` checkpoints from configured training runs,
+evaluates them on the validation split with fixed parameters, and writes a CSV
+comparison table containing the most relevant mask and box metrics.
+
+The comparison is designed to be fair across experiments by using identical
+validation settings for all evaluated models.
+
+Maintainer:
+    Meruna Yugarajah <m.yugarajah@gmail.com>
+    Aleksander Michalak <aleksander1.michalak@uni-a.de>
 """
 
 import csv
@@ -10,7 +17,8 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from ultralytics import YOLO
 
-# Project root: repository root (this file lives in scripts/local/)
+# Validation settings are kept constant to ensure a fair comparison between
+# models and augmentation variants.
 project_root = Path(__file__).resolve().parents[2]
 DATA_YAML = project_root / "data_640_demo_day" / "data.yaml"
 
@@ -20,11 +28,11 @@ VAL_ARGS = dict(
     imgsz=640,
     batch=16,
     device=0,
-    conf=0.25,      # fixed confidence threshold
-    iou=0.50,       # fixed IoU threshold
+    conf=0.25,      
+    iou=0.50,       
     split="val",
-    save_json=False,  # no JSON output
-    plots=False,     # no plots (faster)
+    save_json=False, 
+    plots=False,    
 )
 
 # Models and experiments
@@ -42,7 +50,17 @@ MODEL_TIMESTAMPS = {
 
 
 def safe_float(x: any) -> Optional[float]:
-    """Robust float-Parsing."""
+    """Convert a value to ``float`` if possible.
+
+    This helper prevents repeated try/except blocks when reading metric values
+    from CSV files or result objects.
+
+    Args:
+        x: Value to convert.
+
+    Returns:
+        The converted float value, or ``None`` if the value cannot be converted.
+    """
     try:
         return float(x)
     except (ValueError, TypeError):
@@ -50,7 +68,19 @@ def safe_float(x: any) -> Optional[float]:
 
 
 def compute_f1(p: Optional[float], r: Optional[float]) -> Optional[float]:
-    """Compute F1 from precision and recall."""
+    """Compute the F1 score from precision and recall.
+
+    The F1 score is the harmonic mean of precision and recall and is commonly
+    used to summarize the trade-off between both metrics in a single value.
+
+    Args:
+        p: Precision value.
+        r: Recall value.
+
+    Returns:
+        The computed F1 score, ``0.0`` if ``p + r == 0``, or ``None`` if one of
+        the input values is missing.
+    """
     if p is None or r is None:
         return None
     if p + r == 0:
@@ -59,11 +89,18 @@ def compute_f1(p: Optional[float], r: Optional[float]) -> Optional[float]:
 
 
 def find_col(keys: List[str], candidates: List[str]) -> Optional[str]:
-    """
-    Find a column in `results.csv`.
+    """Find a matching metric column in a CSV header.
 
-    Ultralytics column names can vary slightly between versions, so we match by substring
-    (case-insensitive).
+    Ultralytics may use slightly different metric column names across versions.
+    This function performs a case-insensitive substring match and returns the
+    first matching column name.
+
+    Args:
+        keys: Available column names from the CSV header.
+        candidates: Candidate metric names or substrings to search for.
+
+    Returns:
+        The first matching column name, or ``None`` if no match is found.
     """
     for cand in candidates:
         cl = cand.lower()
@@ -74,11 +111,24 @@ def find_col(keys: List[str], candidates: List[str]) -> Optional[str]:
 
 
 def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
-    """
-    Read `results.csv` from a `val()` run and extract mask metrics:
-    - precision(M), recall(M)
-    - segm mAP50, segm mAP50-95
-    Then compute F1.
+    """Read validation metrics from an Ultralytics ``results.csv`` file.
+
+    The function extracts the relevant segmentation and box metrics from the
+    training results file. Since column names may vary between Ultralytics
+    versions, the metric columns are resolved by substring matching.
+
+    The returned dictionary includes:
+        - mask precision, recall, F1, mAP50, and mAP50-95
+        - box precision, recall, mAP50, and mAP50-95
+
+    Args:
+        results_csv: Path to the ``results.csv`` file produced by training or
+            validation.
+
+    Returns:
+        A dictionary containing the extracted metrics. Returns an empty
+        dictionary if the file does not exist, contains no rows, or has no
+        usable header information.
     """
     if not results_csv.exists():
         return {}
@@ -105,6 +155,15 @@ def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
     col_m5095_b = find_col(keys, ["metrics/box_map50-95", "metrics/box_mAP50-95", "metrics/map50-95"])
 
     def best(col: Optional[str]) -> Optional[float]:
+        """Return the maximum valid value found in a metric column.
+
+        Args:
+            col: Name of the CSV column to evaluate.
+
+        Returns:
+            The maximum numeric value found in the column, or ``None`` if the
+            column is missing or contains no valid numeric values.
+        """
         if col is None:
             return None
         vals = []
@@ -133,8 +192,25 @@ def read_val_metrics(results_csv: Path) -> Dict[str, Optional[float]]:
 
 
 def evaluate_model(model_path: Path, model_name: str, experiment: str) -> Dict:
-    """
-    Evaluates a single model and returns metrics.
+    """Evaluate a single model checkpoint and collect its metrics.
+
+    The function first attempts to read metrics from the corresponding
+    ``results.csv`` file in the training directory. If no usable metrics are
+    found, it runs a fresh validation pass with the fixed comparison settings.
+
+    Args:
+        model_path: Path to the ``best.pt`` checkpoint.
+        model_name: Name of the model directory under ``runs/segment/``.
+        experiment: Name of the augmentation experiment.
+
+    Returns:
+        A dictionary containing model metadata and extracted metrics. Missing
+        metric values are stored as ``None``. If an error occurs, the returned
+        dictionary also contains an ``error`` entry with a short description.
+
+    Raises:
+        ValueError: If no timestamp is configured for the model or if the
+            resolved path lies outside the expected run directory.
     """
     print(f"\n🔍 Evaluating: {model_name} - {experiment}")
     print(f"   Model: {model_path.name}")
@@ -156,33 +232,28 @@ def evaluate_model(model_path: Path, model_name: str, experiment: str) -> Dict:
         }
     
     try:
-        # Retrieve timestamp for this model
         timestamp = MODEL_TIMESTAMPS.get(model_name)
         if not timestamp:
             raise ValueError(
                 f"No timestamp found for model '{model_name}'. Available: {list(MODEL_TIMESTAMPS.keys())}"
             )
         
-        # Validate that `model_path` is inside the expected runs directory
         expected_base = project_root / "runs" / "segment" / model_name / timestamp
         if not str(model_path).startswith(str(expected_base)):
             raise ValueError(f"Model path is outside the expected runs directory: {model_path}")
         
-        # Load model
         model = YOLO(str(model_path))
         
-        # Extract metrics from `results.csv` in the training directory.
+        
         # Expected structure: runs/segment/{model_name}/{timestamp}/{experiment}/results.csv
         # model_path is: runs/segment/{model_name}/{timestamp}/{experiment}/weights/best.pt
-        train_dir = model_path.parent.parent  # Von weights/best.pt zu experiment/
+        train_dir = model_path.parent.parent 
         
         # Validate that `train_dir` is inside the expected runs directory
         if not str(train_dir).startswith(str(expected_base)):
             raise ValueError(f"Train directory is outside the expected runs directory: {train_dir}")
         
         results_csv = train_dir / "results.csv"
-        
-        # Try reading metrics from the training results directory first
         metrics = read_val_metrics(results_csv)
         
         # Fallback: if the CSV does not exist or is empty, run a new validation pass
@@ -190,12 +261,10 @@ def evaluate_model(model_path: Path, model_name: str, experiment: str) -> Dict:
             print("   🔄 Running a new validation pass (CSV not found or empty)...")
             val_args = VAL_ARGS.copy()
             val_args['plots'] = True
-            # Speichere Validation-Output im evaluation Verzeichnis
             val_args['project'] = str(project_root / "evaluation")
             val_args['name'] = f"val_{model_name}_{experiment}"
             results = model.val(**val_args, verbose=False)
             
-            # Try extracting metrics directly from the `results` object
             if hasattr(results, 'seg'):
                 seg = results.seg
                 p_m = safe_float(getattr(seg, 'p', None))
@@ -210,7 +279,6 @@ def evaluate_model(model_path: Path, model_name: str, experiment: str) -> Dict:
                     metrics["mAP50_M"] = map50_m
                     metrics["mAP50-95_M"] = map5095_m
             
-            # Box metrics
             if hasattr(results, 'box'):
                 box = results.box
                 metrics["precision_B"] = safe_float(getattr(box, 'p', None))
@@ -296,7 +364,7 @@ def main():
             result = evaluate_model(model_path, model_name, experiment)
             all_results.append(result)
     
-    # Speichere als CSV im evaluation Verzeichnis
+    
     # Use a combined timestamp for the filename
     combined_timestamp = "_".join(sorted(MODEL_TIMESTAMPS.values()))
     output_csv = evaluation_dir / f"model_comparison_{combined_timestamp}.csv"
@@ -311,13 +379,11 @@ def main():
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for result in all_results:
-            # Nur relevante Felder schreiben
             row = {k: result.get(k) for k in fieldnames}
             writer.writerow(row)
     
     print(f"\n📄 Comparison saved: {output_csv}")
     
-    # Create a nice overview
     print("\n" + "=" * 90)
     print("📊 COMPARISON OVERVIEW")
     print("=" * 90)
@@ -342,7 +408,6 @@ def main():
         
         print(f"{exp:<20} | {model:<15} | {f1:<6.3f} | {p:<6.3f} | {r_val:<6.3f} | {mAP50:<7.3f} | {mAP50_95:<8.3f}")
     
-    # Comparison by experiment
     print("\n" + "=" * 90)
     print("📈 COMPARISON BY EXPERIMENT")
     print("=" * 90)
@@ -366,7 +431,6 @@ def main():
         else:
             print(f"\n🔬 {exp.upper()}: ⚠️ No metrics available")
     
-    # Comparison by model
     print("\n" + "=" * 90)
     print("🤖 COMPARISON BY MODEL")
     print("=" * 90)
@@ -390,7 +454,6 @@ def main():
         else:
             print(f"\n🔬 {model.upper()}: ⚠️ No metrics available")
     
-    # Best overall model
     if sorted_results:
         best_row = sorted_results[0]
         print("\n" + "=" * 90)
@@ -404,7 +467,6 @@ def main():
         print(f"mAP50 (Mask): {best_row['mAP50_M']:.3f}")
         print(f"mAP50-95 (Mask): {best_row['mAP50-95_M']:.3f}")
         
-        # Path to the best model
         best_timestamp = MODEL_TIMESTAMPS.get(best_row['model'])
         if best_timestamp:
             best_model_path = (
